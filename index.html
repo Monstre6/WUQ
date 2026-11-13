@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Extracteur Uqload - French-Stream</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;padding:20px}
+.container{max-width:1200px;margin:0 auto;background:#fff;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.3);overflow:hidden}
+.header{background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;padding:30px;text-align:center}
+.header h1{font-size:2.5em;margin-bottom:10px}
+.header p{font-size:1.1em;opacity:.9}
+.content{padding:30px;display:grid;grid-template-columns:1fr 1fr;gap:30px}
+@media(max-width:968px){.content{grid-template-columns:1fr}}
+.section{display:flex;flex-direction:column;min-width:0}
+.section h2{margin-bottom:15px;color:#333;font-size:1.3em}
+.url-row{display:flex;gap:10px;margin-bottom:15px}
+.url-row input{flex:1;min-width:0;padding:12px;border:2px solid #e0e0e0;border-radius:8px;font-size:.95em}
+.url-row input:focus,textarea:focus{outline:none;border-color:#667eea;box-shadow:0 0 0 3px rgba(102,126,234,.1)}
+.url-row button{flex:0 0 auto}
+.sep{text-align:center;color:#888;font-size:.9em;margin-bottom:10px}
+textarea{flex:1;padding:15px;border:2px solid #e0e0e0;border-radius:8px;font-family:'Courier New',monospace;font-size:.9em;resize:vertical;min-height:340px}
+.button-group{display:flex;gap:10px;margin-top:15px}
+button{flex:1;padding:12px 20px;border:none;border-radius:8px;font-size:1em;font-weight:600;cursor:pointer;transition:all .3s ease}
+button:disabled{opacity:.6;cursor:wait}
+.btn-extract{background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff}
+.btn-extract:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 10px 20px rgba(102,126,234,.3)}
+.btn-paste{background:#2196F3;color:#fff}
+.btn-copy{background:#4CAF50;color:#fff}
+.btn-copy:hover{background:#45a049}
+.btn-clear{background:#f44336;color:#fff}
+.btn-clear:hover{background:#da190b}
+#output{background:#f9f9f9;border:2px solid #e0e0e0;border-radius:8px;padding:20px;min-height:400px;max-height:600px;overflow-y:auto;font-family:'Courier New',monospace;font-size:.85em;line-height:1.6;white-space:pre-wrap;word-break:break-all}
+.info-box{background:#e3f2fd;border-left:4px solid #2196F3;padding:15px;border-radius:4px;margin-bottom:20px;color:#1565c0;font-size:.95em}
+.info-box.success{background:#e8f5e9;border-left-color:#4CAF50;color:#2e7d32}
+.info-box.error{background:#ffebee;border-left-color:#f44336;color:#c62828}
+.opt{margin-top:12px;color:#555;font-size:.9em}
+.stats{margin-top:20px;padding:15px;background:#f0f0f0;border-radius:8px;text-align:center}
+.stat-item{display:inline-block;margin:0 20px;color:#333}
+.stat-number{font-size:1.8em;font-weight:bold;color:#667eea}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>🎬 Extracteur Uqload</h1>
+    <p>Extrayez automatiquement les liens Uqload depuis les pages French-Stream</p>
+  </div>
+
+  <div class="content">
+    <div class="section">
+      <h2>📝 Page à analyser</h2>
+      <div class="info-box">
+        Collez l'<b>adresse de la page</b> ci-dessous, ou le <b>code source</b> (ouvrez la page, Ctrl+U, Ctrl+A, Ctrl+C). L'extraction se lance toute seule au collage.
+      </div>
+      <div class="url-row">
+        <input id="url" type="text" placeholder="https://french-stream.st/..." autocomplete="off">
+        <button class="btn-extract" id="btnUrl" onclick="fetchUrl($('url').value)">🌐 Récupérer</button>
+      </div>
+      <div class="sep">— ou —</div>
+      <textarea id="input" placeholder="Collez ici le code source de la page (ou une adresse)..."></textarea>
+      <div class="button-group">
+        <button class="btn-extract" onclick="extractFromInput()">🔍 Extraire les liens</button>
+        <button class="btn-paste" onclick="pasteClipboard()">📥 Coller</button>
+        <button class="btn-clear" onclick="clearAll()">🗑️ Effacer</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>📊 Résultats</h2>
+      <div id="message" class="info-box" style="display:none;"></div>
+      <div id="output"></div>
+      <label class="opt"><input type="checkbox" id="onlyLinks"> Liens seulement (sans titres)</label>
+      <div class="button-group">
+        <button class="btn-copy" onclick="copyOutput()">📋 Copier tout</button>
+      </div>
+      <div id="stats" class="stats" style="display:none;"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const EMBED_HOST = 'https://uqload.vc';
+const SITE = 'https://french-stream.st';
+const PROXIES = [
+  u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
+  u => 'https://corsproxy.io/?url=' + encodeURIComponent(u),
+  u => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(u)
+];
+let lastResult = null;
+let busy = false;
+
+function showMessage(text, type) {
+  const m = $('message');
+  m.textContent = text;
+  m.className = 'info-box ' + (type || '');
+  m.style.display = 'block';
+}
+
+function resetResults() {
+  lastResult = null;
+  $('output').textContent = '';
+  $('message').style.display = 'none';
+  $('stats').style.display = 'none';
+}
+
+function decodeEntities(s) {
+  const t = document.createElement('textarea');
+  t.innerHTML = s;
+  return t.value;
+}
+
+function absUrl(u, base) {
+  try { return new URL(u, base).href; } catch (e) { return u; }
+}
+
+/* ---------- Recherche des données JSON de la page ---------- */
+function tryParse(s) {
+  if (!s) return null;
+  s = s.trim();
+  for (const v of [s, decodeEntities(s)]) {
+    try {
+      const o = JSON.parse(v);
+      if (o && typeof o === 'object') return o;
+    } catch (e) {}
+  }
+  return null;
+}
+
+function findData(text) {
+  for (const src of [text, decodeEntities(text)]) {
+    const t = src.trim();
+    // 1. Le texte collé est directement du JSON
+    if (t[0] === '{') { const d = tryParse(t); if (d) return d; }
+    // 2. Vrai parsing HTML (tolère espaces, retours à la ligne, ordre des attributs)
+    const doc = new DOMParser().parseFromString(src, 'text/html');
+    const el = doc.getElementById('sr-data');
+    if (el) { const d = tryParse(el.textContent); if (d) return d; }
+    for (const s of doc.querySelectorAll('script')) {
+      if (s.textContent.includes('"seasons"')) { const d = tryParse(s.textContent); if (d) return d; }
+    }
+    // 3. Regex souple en dernier recours
+    const m = src.match(/id\s*=\s*["']sr-data["'][^>]*>\s*(\{[\s\S]*?\})\s*<\/script>/i);
+    if (m) { const d = tryParse(m[1]); if (d) return d; }
+  }
+  return null;
+}
+
+/* ---------- Construction des liens ---------- */
+function fromData(data, base) {
+  const links = [];
+  let full = '', seasons = 0;
+  const add = ep => {
+    const vf = ep && ep.dl && ep.dl.vf;
+    const m = String(vf || '').match(/\/d\/([a-z0-9]+)/i);
+    if (!m) return null;
+    const l = `${EMBED_HOST}/embed-${m[1]}.html`;
+    links.push(l);
+    return l;
+  };
+
+  full += `**Série: ${data.title || 'Série inconnue'}**\n`;
+  full += `Source: ${data.url ? absUrl(data.url, base) : 'URL non trouvée'}\n\n`;
+
+  const list = Array.isArray(data.seasons) ? data.seasons : [];
+  for (const s of list) {
+    const eps = Array.isArray(s.episodes) ? s.episodes : [];
+    seasons++;
+    full += `**Saison ${s.n || 1}** (${eps.length} épisodes) :\n`;
+    for (const ep of eps) { const l = add(ep); if (l) full += l + '\n'; }
+    full += '\n';
+  }
+  if (!list.length) { const l = add(data); if (l) full += l + '\n'; } // film
+  return { full, links, seasons };
+}
+
+// Mode de secours : cherche n'importe quel lien uqload dans le texte brut
+function scanLinks(text) {
+  const t = decodeEntities(text).replace(/\\\//g, '/');
+  const re = /uqload\.[a-z]{2,}\/(?:embed-|d\/)?([a-z0-9]{8,})/gi;
+  const set = new Set();
+  let m;
+  while ((m = re.exec(t))) set.add(`${EMBED_HOST}/embed-${m[1]}.html`);
+  return [...set];
+}
+
+/* ---------- Extraction ---------- */
+function extractText(text, sourceUrl) {
+  resetResults();
+  if (!text.trim()) { showMessage('⚠️ Rien à analyser. Collez une adresse ou le code source de la page.', 'error'); return false; }
+
+  let base = SITE;
+  try { if (sourceUrl) base = new URL(sourceUrl).origin; } catch (e) {}
+
+  let res = null, mode = 'json';
+  const data = findData(text);
+  if (data) { res = fromData(data, base); if (!res.links.length) res = null; }
+
+  if (!res) {
+    const links = scanLinks(text);
+    if (links.length) {
+      mode = 'scan';
+      res = { full: 'Liens Uqload trouvés dans le texte :\n' + links.join('\n') + '\n', links, seasons: 0 };
+    }
+  }
+
+  if (!res) {
+    showMessage('⚠️ Aucun lien Uqload trouvé. Vérifiez que vous avez copié le code source complet (Ctrl+U puis Ctrl+A, Ctrl+C) de la page d\'une série.', 'error');
+    return false;
+  }
+  render(res, mode);
+  return true;
+}
+
+function render(res, mode) {
+  lastResult = res;
+  const only = $('onlyLinks').checked;
+  $('output').textContent = only ? res.links.join('\n') : res.full;
+
+  const n = res.links.length;
+  if (mode === 'json') showMessage(`✅ Extraction réussie ! ${n} lien(s) extrait(s) de ${res.seasons} saison(s).`, 'success');
+  else showMessage(`✅ ${n} lien(s) Uqload trouvé(s) dans le texte (mode de secours : structure de page non reconnue).`, 'success');
+
+  $('stats').innerHTML =
+    (res.seasons ? `<div class="stat-item"><div class="stat-number">${res.seasons}</div><div>Saison(s)</div></div>` : '') +
+    `<div class="stat-item"><div class="stat-number">${n}</div><div>${res.seasons ? 'Épisode(s)' : 'Lien(s)'}</div></div>`;
+  $('stats').style.display = 'block';
+}
+
+function extractFromInput() {
+  const text = $('input').value.trim();
+  if (/^https?:\/\/\S+$/i.test(text)) { $('url').value = text; fetchUrl(text); return; }
+  extractText($('input').value);
+}
+
+/* ---------- Récupération depuis une adresse ---------- */
+async function fetchWithTimeout(url, ms) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try { return await fetch(url, { signal: ctrl.signal }); }
+  finally { clearTimeout(t); }
+}
+
+async function fetchUrl(url) {
+  url = (url || '').trim();
+  if (!url || busy) { if (!url) showMessage('⚠️ Entrez l\'adresse de la page.', 'error'); return; }
+  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+
+  busy = true;
+  $('btnUrl').disabled = true;
+  resetResults();
+  let gotPage = false;
+
+  const attempts = [url, ...PROXIES.map(p => p(url))];
+  for (let i = 0; i < attempts.length; i++) {
+    showMessage(`⏳ Récupération de la page… (essai ${i + 1}/${attempts.length})`, '');
+    try {
+      const r = await fetchWithTimeout(attempts[i], 15000);
+      if (!r.ok) continue;
+      const html = await r.text();
+      if (html.length < 200) continue;
+      gotPage = true;
+      if (findData(html) || scanLinks(html).length) {
+        extractText(html, url);
+        busy = false; $('btnUrl').disabled = false;
+        return;
+      }
+    } catch (e) { /* essai suivant */ }
+  }
+
+  busy = false;
+  $('btnUrl').disabled = false;
+  showMessage(gotPage
+    ? '⚠️ Page récupérée mais aucun lien trouvé (page de protection ou données chargées après coup). Ouvrez la page dans votre navigateur, faites Ctrl+U, Ctrl+A, Ctrl+C et collez le code source dans la zone de gauche.'
+    : '❌ Impossible de récupérer la page (site protégé ou service de relais indisponible). Ouvrez la page dans votre navigateur, faites Ctrl+U, Ctrl+A, Ctrl+C et collez le code source dans la zone de gauche.', 'error');
+}
+
+/* ---------- Boutons ---------- */
+async function pasteClipboard() {
+  try {
+    const t = await navigator.clipboard.readText();
+    $('input').value = t;
+    extractFromInput();
+  } catch (e) {
+    showMessage('❌ Collage automatique refusé par le navigateur. Cliquez dans la zone de texte et utilisez Ctrl+V.', 'error');
+  }
+}
+
+function copyOutput() {
+  const out = $('output').textContent;
+  if (!out.trim()) { showMessage('⚠️ Rien à copier. Veuillez d\'abord extraire les liens.', 'error'); return; }
+  const ok = () => showMessage('✅ Résultats copiés dans le presse-papiers !', 'success');
+  const fallback = () => {
+    const t = document.createElement('textarea');
+    t.value = out;
+    t.style.position = 'fixed';
+    t.style.opacity = '0';
+    document.body.appendChild(t);
+    t.select();
+    let done = false;
+    try { done = document.execCommand('copy'); } catch (e) {}
+    t.remove();
+    done ? ok() : showMessage('❌ Erreur lors de la copie', 'error');
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(out).then(ok).catch(fallback);
+  else fallback();
+}
+
+function clearAll() {
+  $('input').value = '';
+  $('url').value = '';
+  resetResults();
+}
+
+$('onlyLinks').addEventListener('change', () => { if (lastResult) render(lastResult, lastResult.seasons ? 'json' : 'scan'); });
+$('input').addEventListener('paste', () => setTimeout(extractFromInput, 100));
+$('input').addEventListener('keydown', e => { if (e.ctrlKey && e.key === 'Enter') extractFromInput(); });
+$('url').addEventListener('keydown', e => { if (e.key === 'Enter') fetchUrl($('url').value); });
+$('url').addEventListener('paste', () => setTimeout(() => { if (/^https?:\/\/\S+$/i.test($('url').value.trim())) fetchUrl($('url').value); }, 100));
+</script>
+</body>
+</html>

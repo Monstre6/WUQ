@@ -52,18 +52,18 @@ button:disabled{opacity:.6;cursor:wait}
     <div class="section">
       <h2>📝 Page à analyser</h2>
       <div class="info-box">
-        Collez l'<b>adresse de la page</b> ci-dessous, ou le <b>code source</b> (ouvrez la page, Ctrl+U, Ctrl+A, Ctrl+C). L'extraction se lance toute seule au collage.
+        Collez l'<b>adresse de la page</b> ci-dessous, ou le <b>code source</b> (Ctrl+U, Ctrl+A, Ctrl+C). L'extraction se lance toute seule au collage.
       </div>
       <div class="url-row">
-        <input id="url" type="text" placeholder="https://french-stream.st/..." autocomplete="off">
-        <button class="btn-extract" id="btnUrl" onclick="fetchUrl($('url').value)">🌐 Récupérer</button>
+        <input id="url" type="text" placeholder="https://..." autocomplete="off">
+        <button class="btn-extract" id="btnUrl">🌐 Récupérer</button>
       </div>
       <div class="sep">— ou —</div>
       <textarea id="input" placeholder="Collez ici le code source de la page (ou une adresse)..."></textarea>
       <div class="button-group">
-        <button class="btn-extract" onclick="extractFromInput()">🔍 Extraire les liens</button>
-        <button class="btn-paste" onclick="pasteClipboard()">📥 Coller</button>
-        <button class="btn-clear" onclick="clearAll()">🗑️ Effacer</button>
+        <button class="btn-extract" id="btnExtract">🔍 Extraire les liens</button>
+        <button class="btn-paste" id="btnPaste">📥 Coller</button>
+        <button class="btn-clear" id="btnClear">🗑️ Effacer</button>
       </div>
     </div>
 
@@ -73,7 +73,7 @@ button:disabled{opacity:.6;cursor:wait}
       <div id="output"></div>
       <label class="opt"><input type="checkbox" id="onlyLinks"> Liens seulement (sans titres)</label>
       <div class="button-group">
-        <button class="btn-copy" onclick="copyOutput()">📋 Copier tout</button>
+        <button class="btn-copy" id="btnCopy">📋 Copier tout</button>
       </div>
       <div id="stats" class="stats" style="display:none;"></div>
     </div>
@@ -83,7 +83,6 @@ button:disabled{opacity:.6;cursor:wait}
 <script>
 const $ = id => document.getElementById(id);
 const EMBED_HOST = 'https://uqload.vc';
-const SITE = 'https://french-stream.st';
 const PROXIES = [
   u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
   u => 'https://corsproxy.io/?url=' + encodeURIComponent(u),
@@ -92,6 +91,7 @@ const PROXIES = [
 let lastResult = null;
 let busy = false;
 
+/* ---------- Utilitaires ---------- */
 function showMessage(text, type) {
   const m = $('message');
   m.textContent = text;
@@ -112,11 +112,38 @@ function decodeEntities(s) {
   return t.value;
 }
 
-function absUrl(u, base) {
-  try { return new URL(u, base).href; } catch (e) { return u; }
+// Extrait tous les identifiants Uqload d'un texte (quel que soit le format)
+function idsIn(str) {
+  const s = decodeEntities(str).replace(/\\\//g, '/');
+  const re = /uqload\.[a-z]{2,}\/(?:embed-|d\/)?([a-z0-9]{6,})/gi;
+  const out = [];
+  let m;
+  while ((m = re.exec(s))) out.push(m[1]);
+  return out;
 }
 
-/* ---------- Recherche des données JSON de la page ---------- */
+// Tous les textes contenus dans un objet, à n'importe quelle profondeur
+function collectStrings(node, out = []) {
+  if (typeof node === 'string') out.push(node);
+  else if (node && typeof node === 'object')
+    for (const k of Object.keys(node)) collectStrings(node[k], out);
+  return out;
+}
+
+// Trouve tous les objets qui ont une liste "episodes" (= les saisons)
+function collectSeasons(node, acc = []) {
+  if (!node || typeof node !== 'object') return acc;
+  if (!Array.isArray(node) && node.episodes && typeof node.episodes === 'object') acc.push(node);
+  for (const k of Object.keys(node)) collectSeasons(node[k], acc);
+  return acc;
+}
+
+function asList(x) {
+  if (Array.isArray(x)) return x;
+  if (x && typeof x === 'object') return Object.values(x);
+  return [];
+}
+
 function tryParse(s) {
   if (!s) return null;
   s = s.trim();
@@ -129,103 +156,149 @@ function tryParse(s) {
   return null;
 }
 
+// Cherche le bloc de données JSON de la page
 function findData(text) {
   for (const src of [text, decodeEntities(text)]) {
     const t = src.trim();
-    // 1. Le texte collé est directement du JSON
-    if (t[0] === '{') { const d = tryParse(t); if (d) return d; }
-    // 2. Vrai parsing HTML (tolère espaces, retours à la ligne, ordre des attributs)
+    if (t[0] === '{') { const d = tryParse(t); if (d && d.seasons !== undefined || (t.includes('"episodes"'))) return d; }
     const doc = new DOMParser().parseFromString(src, 'text/html');
     const el = doc.getElementById('sr-data');
     if (el) { const d = tryParse(el.textContent); if (d) return d; }
     for (const s of doc.querySelectorAll('script')) {
-      if (s.textContent.includes('"seasons"')) { const d = tryParse(s.textContent); if (d) return d; }
+      if (s.textContent.includes('"episodes"')) { const d = tryParse(s.textContent); if (d) return d; }
     }
-    // 3. Regex souple en dernier recours
-    const m = src.match(/id\s*=\s*["']sr-data["'][^>]*>\s*(\{[\s\S]*?\})\s*<\/script>/i);
-    if (m) { const d = tryParse(m[1]); if (d) return d; }
   }
   return null;
 }
 
-/* ---------- Construction des liens ---------- */
-function fromData(data, base) {
-  const links = [];
-  let full = '', seasons = 0;
-  const add = ep => {
-    const vf = ep && ep.dl && ep.dl.vf;
-    const m = String(vf || '').match(/\/d\/([a-z0-9]+)/i);
-    if (!m) return null;
-    const l = `${EMBED_HOST}/embed-${m[1]}.html`;
-    links.push(l);
-    return l;
-  };
-
-  full += `**Série: ${data.title || 'Série inconnue'}**\n`;
-  full += `Source: ${data.url ? absUrl(data.url, base) : 'URL non trouvée'}\n\n`;
-
-  const list = Array.isArray(data.seasons) ? data.seasons : [];
-  for (const s of list) {
-    const eps = Array.isArray(s.episodes) ? s.episodes : [];
-    seasons++;
-    full += `**Saison ${s.n || 1}** (${eps.length} épisodes) :\n`;
-    for (const ep of eps) { const l = add(ep); if (l) full += l + '\n'; }
-    full += '\n';
-  }
-  if (!list.length) { const l = add(data); if (l) full += l + '\n'; } // film
-  return { full, links, seasons };
+function pageTitle(text) {
+  try {
+    const doc = new DOMParser().parseFromString(text, 'text/html');
+    const h1 = doc.querySelector('h1');
+    const t = (h1 && h1.textContent.trim()) || (doc.title || '').trim();
+    return t.replace(/\s*[-|–]\s*french-stream.*$/i, '').trim();
+  } catch (e) { return ''; }
 }
 
-// Mode de secours : cherche n'importe quel lien uqload dans le texte brut
-function scanLinks(text) {
-  const t = decodeEntities(text).replace(/\\\//g, '/');
-  const re = /uqload\.[a-z]{2,}\/(?:embed-|d\/)?([a-z0-9]{8,})/gi;
-  const set = new Set();
-  let m;
-  while ((m = re.exec(t))) set.add(`${EMBED_HOST}/embed-${m[1]}.html`);
-  return [...set];
+/* ---------- Construction de la liste saisons / épisodes ---------- */
+function buildFromData(data) {
+  // seasons: Map<numéro, Map<numéro épisode, Set<id>>>
+  const seasons = new Map();
+  const addLink = (sNum, eNum, ids) => {
+    if (!seasons.has(sNum)) seasons.set(sNum, new Map());
+    const eps = seasons.get(sNum);
+    if (!eps.has(eNum)) eps.set(eNum, new Set());
+    ids.forEach(id => eps.get(eNum).add(id));
+  };
+
+  const seasonNodes = collectSeasons(data);
+  seasonNodes.forEach((s, si) => {
+    const sNum = Number(s.n ?? s.number ?? s.season ?? s.num) || (si + 1);
+    asList(s.episodes).forEach((ep, ei) => {
+      const eNum = Number(ep.n ?? ep.number ?? ep.episode ?? ep.num) || (ei + 1);
+      const ids = [];
+      collectStrings(ep).forEach(str => ids.push(...idsIn(str)));
+      if (ids.length) addLink(sNum, eNum, ids);
+    });
+  });
+
+  // Film ou structure sans saisons : on prend tous les liens du JSON
+  if (!seasonNodes.length) {
+    const ids = [];
+    collectStrings(data).forEach(str => ids.push(...idsIn(str)));
+    if (ids.length) addLink(1, 1, ids);
+  }
+
+  return seasons;
+}
+
+function sortedNums(keys) {
+  return [...keys].sort((a, b) => a - b);
 }
 
 /* ---------- Extraction ---------- */
-function extractText(text, sourceUrl) {
+function extractText(text) {
   resetResults();
-  if (!text.trim()) { showMessage('⚠️ Rien à analyser. Collez une adresse ou le code source de la page.', 'error'); return false; }
-
-  let base = SITE;
-  try { if (sourceUrl) base = new URL(sourceUrl).origin; } catch (e) {}
-
-  let res = null, mode = 'json';
-  const data = findData(text);
-  if (data) { res = fromData(data, base); if (!res.links.length) res = null; }
-
-  if (!res) {
-    const links = scanLinks(text);
-    if (links.length) {
-      mode = 'scan';
-      res = { full: 'Liens Uqload trouvés dans le texte :\n' + links.join('\n') + '\n', links, seasons: 0 };
-    }
-  }
-
-  if (!res) {
-    showMessage('⚠️ Aucun lien Uqload trouvé. Vérifiez que vous avez copié le code source complet (Ctrl+U puis Ctrl+A, Ctrl+C) de la page d\'une série.', 'error');
+  if (!text.trim()) {
+    showMessage('⚠️ Rien à analyser. Collez une adresse ou le code source de la page.', 'error');
     return false;
   }
-  render(res, mode);
+
+  const title = (() => {
+    const data = findData(text);
+    if (data && data.title) return String(data.title).trim();
+    return pageTitle(text) || 'Titre inconnu';
+  })();
+
+  const data = findData(text);
+  const seasons = data ? buildFromData(data) : new Map();
+
+  // Tous les liens Uqload présents dans le texte brut
+  const allRaw = [...new Set(idsIn(text))];
+
+  // Liens trouvés dans le texte mais non rattachés à un épisode
+  const assigned = new Set();
+  seasons.forEach(eps => eps.forEach(set => set.forEach(id => assigned.add(id))));
+  const extras = allRaw.filter(id => !assigned.has(id));
+
+  if (!seasons.size && !extras.length) {
+    showMessage('⚠️ Aucun lien Uqload trouvé. Vérifiez que vous avez copié le code source complet (Ctrl+U, Ctrl+A, Ctrl+C) de la page.', 'error');
+    return false;
+  }
+
+  // Construction du résultat final
+  const seasonList = sortedNums(seasons.keys()).map(sNum => {
+    const eps = seasons.get(sNum);
+    const epList = sortedNums(eps.keys()).map(eNum => ({
+      n: eNum,
+      links: [...eps.get(eNum)].map(id => `${EMBED_HOST}/embed-${id}.html`)
+    }));
+    return { n: sNum, episodes: epList };
+  });
+
+  const allLinks = [];
+  seasonList.forEach(s => s.episodes.forEach(e => allLinks.push(...e.links)));
+  const extraLinks = extras.map(id => `${EMBED_HOST}/embed-${id}.html`);
+  allLinks.push(...extraLinks);
+
+  render({ title, seasons: seasonList, extraLinks, links: allLinks });
   return true;
 }
 
-function render(res, mode) {
+function render(res) {
   lastResult = res;
   const only = $('onlyLinks').checked;
-  $('output').textContent = only ? res.links.join('\n') : res.full;
 
-  const n = res.links.length;
-  if (mode === 'json') showMessage(`✅ Extraction réussie ! ${n} lien(s) extrait(s) de ${res.seasons} saison(s).`, 'success');
-  else showMessage(`✅ ${n} lien(s) Uqload trouvé(s) dans le texte (mode de secours : structure de page non reconnue).`, 'success');
+  let out;
+  if (only) {
+    out = res.links.join('\n');
+  } else {
+    const lines = [res.title, ''];
+    res.seasons.forEach(s => {
+      lines.push(`Saison ${s.n} (${s.episodes.length} épisode${s.episodes.length > 1 ? 's' : ''}) :`);
+      s.episodes.forEach(e => {
+        lines.push(`Épisode ${e.n} : ${e.links.join(' | ')}`);
+      });
+      lines.push('');
+    });
+    if (res.extraLinks.length) {
+      lines.push('Non classés :');
+      res.extraLinks.forEach(l => lines.push(l));
+    }
+    out = lines.join('\n');
+  }
+  $('output').textContent = out;
+
+  const nSeasons = res.seasons.length;
+  const nEps = res.seasons.reduce((a, s) => a + s.episodes.length, 0);
+  const nLinks = res.links.length;
+  showMessage(`✅ Extraction terminée : ${nSeasons} saison(s), ${nEps} épisode(s), ${nLinks} lien(s).` +
+    (res.extraLinks.length ? ` ${res.extraLinks.length} lien(s) non classé(s).` : ''), 'success');
 
   $('stats').innerHTML =
-    (res.seasons ? `<div class="stat-item"><div class="stat-number">${res.seasons}</div><div>Saison(s)</div></div>` : '') +
-    `<div class="stat-item"><div class="stat-number">${n}</div><div>${res.seasons ? 'Épisode(s)' : 'Lien(s)'}</div></div>`;
+    `<div class="stat-item"><div class="stat-number">${nSeasons}</div><div>Saison(s)</div></div>` +
+    `<div class="stat-item"><div class="stat-number">${nEps}</div><div>Épisode(s)</div></div>` +
+    `<div class="stat-item"><div class="stat-number">${nLinks}</div><div>Lien(s)</div></div>`;
   $('stats').style.display = 'block';
 }
 
@@ -245,7 +318,8 @@ async function fetchWithTimeout(url, ms) {
 
 async function fetchUrl(url) {
   url = (url || '').trim();
-  if (!url || busy) { if (!url) showMessage('⚠️ Entrez l\'adresse de la page.', 'error'); return; }
+  if (!url) { showMessage('⚠️ Entrez l\'adresse de la page.', 'error'); return; }
+  if (busy) return;
   if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
 
   busy = true;
@@ -262,8 +336,8 @@ async function fetchUrl(url) {
       const html = await r.text();
       if (html.length < 200) continue;
       gotPage = true;
-      if (findData(html) || scanLinks(html).length) {
-        extractText(html, url);
+      if (findData(html) || idsIn(html).length) {
+        extractText(html);
         busy = false; $('btnUrl').disabled = false;
         return;
       }
@@ -273,8 +347,8 @@ async function fetchUrl(url) {
   busy = false;
   $('btnUrl').disabled = false;
   showMessage(gotPage
-    ? '⚠️ Page récupérée mais aucun lien trouvé (page de protection ou données chargées après coup). Ouvrez la page dans votre navigateur, faites Ctrl+U, Ctrl+A, Ctrl+C et collez le code source dans la zone de gauche.'
-    : '❌ Impossible de récupérer la page (site protégé ou service de relais indisponible). Ouvrez la page dans votre navigateur, faites Ctrl+U, Ctrl+A, Ctrl+C et collez le code source dans la zone de gauche.', 'error');
+    ? '⚠️ Page récupérée mais aucun lien trouvé. Ouvrez la page dans votre navigateur, faites Ctrl+U, Ctrl+A, Ctrl+C et collez le code source dans la zone de gauche.'
+    : '❌ Impossible de récupérer la page. Ouvrez la page dans votre navigateur, faites Ctrl+U, Ctrl+A, Ctrl+C et collez le code source dans la zone de gauche.', 'error');
 }
 
 /* ---------- Boutons ---------- */
@@ -314,11 +388,19 @@ function clearAll() {
   resetResults();
 }
 
-$('onlyLinks').addEventListener('change', () => { if (lastResult) render(lastResult, lastResult.seasons ? 'json' : 'scan'); });
+/* ---------- Écouteurs ---------- */
+$('btnUrl').addEventListener('click', () => fetchUrl($('url').value));
+$('btnExtract').addEventListener('click', extractFromInput);
+$('btnPaste').addEventListener('click', pasteClipboard);
+$('btnClear').addEventListener('click', clearAll);
+$('btnCopy').addEventListener('click', copyOutput);
+$('onlyLinks').addEventListener('change', () => { if (lastResult) render(lastResult); });
 $('input').addEventListener('paste', () => setTimeout(extractFromInput, 100));
 $('input').addEventListener('keydown', e => { if (e.ctrlKey && e.key === 'Enter') extractFromInput(); });
 $('url').addEventListener('keydown', e => { if (e.key === 'Enter') fetchUrl($('url').value); });
-$('url').addEventListener('paste', () => setTimeout(() => { if (/^https?:\/\/\S+$/i.test($('url').value.trim())) fetchUrl($('url').value); }, 100));
+$('url').addEventListener('paste', () => setTimeout(() => {
+  if (/^https?:\/\/\S+$/i.test($('url').value.trim())) fetchUrl($('url').value);
+}, 100));
 </script>
 </body>
 </html>
